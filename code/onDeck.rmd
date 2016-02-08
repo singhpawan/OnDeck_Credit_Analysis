@@ -1,0 +1,196 @@
+---
+title: "ondeck analytics code and report"
+author: "Pawandeep Singh"
+date: "1 Feb 2015"
+output: html_document
+---
+
+
+
+Loading ... Necessary packages for the project
+
+```{r}
+library(dplyr)
+library(markovchain)
+library(gridExtra)
+library(questionr)
+library(ggplot2)
+library(forecast)
+library(knitr)
+library(memisc)
+```
+ 
+```{r "loading data and summary"}
+data <- read.csv('/home/pawan/Downloads/OnDeck Analytics Asssignment.csv')
+df <- data.frame(data)
+summary(df)
+```
+
+Creating Factor variables for credit rating.
+```{r}
+df$days_delinquent_old_factor <- cut(df$days_delinquent_old, c(0,1,5,10,30,60,180), labels = c("0","1-5","5-10","10-30","30-60","60+"))
+df$days_delinquent_new_factor <- cut(df$days_delinquent_new, c(0,1,5,10,30,60,180), labels = c("0","1-5","5-10","10-30","30-60","60+"))
+```
+
+
+####Feature engineering to create new features using existing features. Designing better features is crucial for designing better models and better prediction.
+```{r}
+#Ratio : The ratio of amount due to av. bank balance in account. This give us an idea about the potentil to pay the loan. 
+df$ratio <- df$new_outstanding_principal_balance / df$average_bank_balance__c 
+#Percent_loan_paid: Fraction of loan paid
+df$percent_loan_paid <- ((df$initial_loan_amount - df$new_outstanding_principal_balance) / df$initial_loan_amount) * 100
+#delinquency_rate: tell us the by what factor the delinquency has increased
+df$delinquency_rate <- df$days_delinquent_new / df$days_delinquent_old
+#movement: This basically takes the entires whose delinquency has increase or decreased/reamained unchanged
+df$movement <- ifelse(df$days_delinquent_new > df$days_delinquent_old, "increase", "same/decreased")
+df$last_cleared_payment_date <- as.Date(df$last_cleared_payment_date)
+#days_since_last_payment: No of days since the last payment
+df$days_since_last_payment <- as.Date("2012-12-1") - df$last_cleared_payment_date
+# target: variable made for the prediction task. 1- increase   0- Unchanged/Decreased
+df$target <- ifelse(df$movement == "increase", 1, 0)
+head(df)
+```
+
+####Plot of fico score Vs days_delinquent_old and days_delinquent_new with respect to the movement variable. Plotting this shows us the movement of loans from one credit rating to another. We can see that most of the loans have worsened and moved from 30-60 to 60+ rating. On the other hand small no of loans have improved their rating from and can be seen in the 60-180 rating.
+```{r fig.width= 10, fig.height = 8}
+p1 <- ggplot(data = df, aes(x = days_delinquent_new, y = fico)) + geom_point(aes(color=df$movement)) + scale_x_continuous(limits=c(0,180), breaks=c(1,5,10,30,60,180))
+p2 <- ggplot(data = df, aes(x = days_delinquent_old, y = fico)) + geom_point(aes(color=df$movement)) + scale_x_continuous(limits=c(0,180), breaks=c(1,5,10,30,60,180))
+grid.arrange(p1, p2, ncol = 1)
+```
+
+
+####This plot we plot percent_loan_paid Vs deliquency_rate. We can see that loans with higher percnet_loan_paid have lower deliquency_rate and in addition to that we see that Direct and FAP have higher deliquency rate and Referreal and Promontory have slightly better deliquency rate.
+```{r fig.width= 10, fig.height = 8}
+p3 <- ggplot(data = df, aes(x =percent_loan_paid, y = delinquency_rate )) + geom_point(aes(color=df$sales_channel__c))
+p3
+```
+
+####This plot we plot percent_loan_paid Vs deliquency_rate. We can see that loans with spli funding and Transfer account vendors have lower deliquency rate. A reason might be that a part of the payment is already taken in split funding and the other factor is ease of payment.
+```{r fig.width= 10, fig.height = 8}
+p4 <- ggplot(data = df, aes(x =percent_loan_paid, y = delinquency_rate )) + geom_point(aes(color=df$current_collection_method))
+p4
+```
+
+####Important: This is the perfect graph which shows the transition of credit ratings of each loan (fico Vs days_deliquency) with respect to their old ratings. We see how the ratings from 30-60 blast towards 60+ ratings. And on the other hand we see coupe of raings getting improved and moving back towards 0 deliquency. In addition to that we see that slightly higher fico scores have lower deliquency rates.
+```{r fig.width= 10, fig.height = 8}
+p5 <- ggplot(data = df, aes(x = days_delinquent_new, y = fico)) + geom_point(aes(color=df$days_delinquent_old_factor)) + scale_x_continuous(limits=c(0,180), breaks=c(1,5,10,30,60,180))
+p6 <- ggplot(data = df, aes(x = days_delinquent_old, y = fico)) + geom_point(aes(color=df$days_delinquent_old_factor)) + scale_x_continuous(limits=c(0,180), breaks=c(1,5,10,30,60,180))
+grid.arrange(p5, p6, ncol = 1)
+```
+This graph futher shows us the movement of credit ratings across the spectrum for deliquency_rate Vs percent loan paid. But noting certain exceptions. higher loan paid percent have slower deliquency rate.
+```{r fig.width= 10, fig.height = 8}
+p7 <- ggplot(data = df, aes(x =percent_loan_paid, y = delinquency_rate )) + geom_point(aes(color=df$days_delinquent_new_factor))
+p8 <- ggplot(data = df, aes(x =percent_loan_paid, y = delinquency_rate )) + geom_point(aes(color=df$days_delinquent_old_factor))
+grid.arrange(p7, p8, ncol=1)
+```
+####This is high level breakdown of different parameters w.r.t channel and collection method. Which tells us which channel and collection method is performing better. The reason for showing median along with mean is because median is more robust as compared to mean.
+
+
+####Takeaway: we learn Referral channel is the most effective of all other than promontory since it has only one entry. Referral has the lowest principal amount due, lowest delinquent rate,  has better bank_balance/ amount_due ratio , highest loan percentage paid. and in terms of collection method ACH perfoms better than its counterpart in termns of percent_loan paid, lower principal amount due. The following data helps us in making better intuition about the data.
+```{r}
+by(df$new_outstanding_principal_balance, df$sales_channel__c, mean)
+by(df$new_outstanding_principal_balance,df$sales_channel__c, median)
+```
+```{r}
+by(df$days_delinquent_old,df$sales_channel__c,mean)
+by(df$days_delinquent_old,df$sales_channel__c,median)
+```
+```{r}
+by(df$days_delinquent_new,df$sales_channel__c,mean)
+by(df$days_delinquent_new,df$sales_channel__c,median)
+```
+```{r}
+by(df$ratio,df$sales_channel__c,mean)
+by(df$ratio,df$sales_channel__c,median)
+```
+```{r}
+by(df$ratio, df$current_collection_method, mean)
+by(df$ratio, df$current_collection_method, median)
+```
+```{r}
+by(df$new_outstanding_principal_balance, df$current_collection_method, mean)
+by(df$new_outstanding_principal_balance, df$current_collection_method, median)
+```
+```{r}
+by(df$average_bank_balance__c, df$current_collection_method, mean)
+by(df$average_bank_balance__c, df$current_collection_method, median)
+```
+```{r}
+by(df$percent_loan_paid, df$sales_channel__c, mean)
+by(df$percent_loan_paid, df$sales_channel__c, median)
+```
+```{r}
+by(df$percent_loan_paid, df$current_collection_method, mean)
+by(df$percent_loan_paid, df$current_collection_method, median)
+```
+```{r}
+by(df$delinquency_rate, df$sales_channel__c, mean)
+by(df$delinquency_rate, df$sales_channel__c, median)
+```
+```{r}
+by(df$delinquency_rate, df$current_collection_method, mean)
+by(df$delinquency_rate, df$current_collection_method, median)
+```
+####These are transtion probabilites and weighted transition probabilites respectively. The weights are z normalized for faster calculation and also normalization helps in convergence(although not applicable here).
+```{r}
+transmat <- wtd.table(df$days_delinquent_old_factor, df$days_delinquent_new_factor,na.rm = TRUE)
+transmat_prob <- transmat/rowSums(transmat)
+transmat_prob
+transmat_norm <- wtd.table(df$days_delinquent_old_factor, df$days_delinquent_new_factor, weights = df$new_outstanding_principal_balance - mean(df$new_outstanding_principal_balance)/sd(df$new_outstanding_principal_balance),na.rm = TRUE)
+transmat_norm_prob <- transmat_norm/rowSums(transmat_norm)
+#weighted transition probabilities
+transmat_norm_prob
+```
+###########################################################################################################################
+####To implement a logistic regression model. This model is good for predicting the odds of increase or decrease of ratings.
+####This is the model trained on whole data and contains the  implementation for chekcing the effectiveness of the model. Here we see that percent_loan_paid, days_since_last_payment and loan type are statistically significant in predicing the newer values.
+```{r}
+m1 <- glm(target ~ ratio, data = df, family = "binomial")
+m2 <- update(m1,  ~ . + percent_loan_paid)
+m3 <- update(m2, ~ . + lender_payoff)
+m4 <- update(m3, ~ . + fico)
+m5 <- update(m4, ~ . + sales_channel__c)
+m6 <- update(m5, ~ . + type)
+m7 <- update(m6, ~ . + days_since_last_payment)
+mtable(m1, m2, m3,m5,m5,m6,m7)
+```
+############################################################################################################################
+####Here we will train the model using around 90% of the data and will predict the reamaining testing data using the trained model.
+```{r}
+training <- df[1:420,]
+testing <- df[421:477,]
+head(testing)
+ma <- glm(target ~ ratio, data = training, family = "binomial")
+mb <- update(ma,  ~ . + percent_loan_paid)
+mc <- update(mb, ~ . + lender_payoff)
+md <- update(mc, ~ . + fico)
+me <- update(md, ~ . + sales_channel__c)
+mf <- update(me, ~ . + type)
+mg <- update(mf, ~ . + days_since_last_payment)
+mtable(ma, mb, mc,md,me,mf,mg)
+```
+##################Testign part###################################################################################
+####We create a predice variable in testing data frame and will use the targe to check our prediction. 
+
+```{r}
+testing$predict <- predict(mg, newdata=testing, type= "response")
+```
+
+####If the prediction probaliity is greater then 0.33 we make the prediction to 1 i.e the rating increased and 0 otherwise.
+
+```{r}
+testing$predict <- ifelse(testing$predict > 0.33, 1, 0 )
+testing[,c('target', 'predict')]
+```
+####The accuracy function calculates the mean  error. and it is around 0.228. which indirectly tell us that the accuracy is around 77%. 
+```{r}
+acc <- accuracy(testing$predict, testing$target)
+acc
+```
+####The confusion matrix tell us how our prediction went and further statistic can be calculated from it among accuracy. which is around 77.12%
+```{r}
+confusionmatrix <- table(testing$predict, testing$target)
+confusionmatrix
+```
+
+#### To summarize, we see that percent_loan_paid, days_since_last_payment and loan type are statistically significant in predicing the target variable i.e (whether the credit ratings increased or not). In conjunctin with logistic regresssion we get an accuracy of around 77%. Which is pretty decent given the size of data. More data, and experminting with additional techniqus such as lasso, elastic nets and advanced techniques such as CNN and RNN could further help us create a better model.

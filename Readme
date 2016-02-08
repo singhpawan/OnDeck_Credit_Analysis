@@ -1,0 +1,5 @@
+Code: The folder contains the .R files and the rmd files needed to generate the html.
+plots: These are some additional plots I made while doing exploratory analysis. 
+       But all the fun plots are in the .rmd file. 
+ondeck_singh.html: file contains the code along with plots and documentation.
+Documentation: is in .rmd file and .R file contains the Raw code.
