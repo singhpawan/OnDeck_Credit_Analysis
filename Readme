@@ -1,5 +1,83 @@
-Code: The folder contains the .R files and the rmd files needed to generate the html.
-plots: These are some additional plots I made while doing exploratory analysis. 
-       But all the fun plots are in the .rmd file. 
-ondeck_singh.html: file contains the code along with plots and documentation.
-Documentation: is in .rmd file and .R file contains the Raw code.
+Establishing a private connection between your AWS account and a Snowflake instance hosted on AWS is done using **AWS PrivateLink**. Depending on the direction of the traffic, you will either configure an inbound or outbound connection.
+
+**Prerequisites:**
+
+* Your Snowflake account must be **Business Critical Edition** or higher.
+* Your AWS VPC and your Snowflake account must be located in the **same AWS Region**.
+* You need `ACCOUNTADMIN` privileges in Snowflake and IAM/VPC administrative rights in AWS.
+
+---
+
+### Part 1: Connecting AWS to Snowflake (Inbound)
+
+This is the standard setup for querying Snowflake securely from your AWS applications or EC2 instances without traversing the public internet.
+
+**Phase 1: Authorize your AWS Account in Snowflake**
+
+1. **Generate a federated token** using the AWS CLI. This token temporarily proves your AWS identity to Snowflake:
+```bash
+aws sts get-federation-token --name snowflake-privatelink
+
+```
+
+
+Save the JSON output and extract the 12-digit AWS Account ID from the `FederatedUserId`.
+2. **Authorize the connection** in Snowflake. Log in and execute the following as `ACCOUNTADMIN`, pasting your 12-digit AWS ID and the *entire* JSON string from the previous step:
+```sql
+USE ROLE ACCOUNTADMIN;
+SELECT SYSTEM$AUTHORIZE_PRIVATELINK (
+    '<12-digit-aws-id>',
+    '<full-federated-token-json>'
+);
+
+```
+
+
+3. **Retrieve your configuration details**. Run the following query and save the results:
+```sql
+SELECT key, value FROM TABLE(FLATTEN(INPUT=>PARSE_JSON(SYSTEM$GET_PRIVATELINK_CONFIG())));
+
+```
+
+
+Take note of the `privatelink-vpce-id` (this is the Snowflake endpoint service you will connect to in AWS), as well as your specific account, Snowsight, and OCSP PrivateLink URLs.
+
+**Phase 2: Create the VPC Endpoint in AWS**
+
+1. In the AWS Management Console, navigate to **VPC > Endpoints** and click **Create endpoint**.
+2. Under Service category, select **Other endpoint services**.
+3. In the Service name field, paste the `privatelink-vpce-id` you copied from Snowflake and click **Verify Service**.
+4. Select your target VPC and subnets.
+5. Attach a Security Group that allows inbound traffic on ports `80` and `443`.
+6. Once created, copy the primary **DNS name** of the new VPC endpoint. Choose the generic regional DNS name, avoiding the zonal-specific names (e.g., choose the one without `us-east-1a` in the string).
+
+**Phase 3: Configure DNS Routing (Amazon Route 53)**
+To ensure your applications connect seamlessly, you must route Snowflake's PrivateLink URLs to your new VPC endpoint.
+
+1. In Route 53, create a new **Private Hosted Zone** for `privatelink.snowflakecomputing.com` and attach it to your VPC.
+2. Create **CNAME records** within this zone pointing to the VPC Endpoint DNS name you copied in Phase 2. You will typically need records for:
+* Your Account URL (e.g., `<account>.<region>.privatelink.snowflakecomputing.com`)
+* Your Snowsight URL (e.g., `app-<org>-<account>.privatelink.snowflakecomputing.com`)
+* The OCSP URL (e.g., `ocsp.<account>.<region>.privatelink.snowflakecomputing.com`)
+
+
+
+---
+
+### Part 2: Connecting Snowflake to AWS (Outbound)
+
+If you need Snowflake to privately access an AWS resource (like an internal S3 bucket, an API Gateway, or AWS Bedrock), you set up a private connectivity endpoint from within Snowflake.
+
+1. **Expose your AWS Service:** Ensure your AWS service is fronted by an AWS VPC Endpoint Service backed by a Network Load Balancer (NLB). Note the Endpoint Service name.
+2. **Whitelist Snowflake:** Retrieve your Snowflake account principal by running `SELECT SYSTEM$GET_PRIVATELINK_CONFIG();` in Snowflake and copying the `privatelink-account-principal` value. Add this ARN to the "Allow principals" list on your AWS Endpoint Service.
+3. **Provision the Endpoint in Snowflake:** Run the following system function in Snowflake as `ACCOUNTADMIN`:
+```sql
+SELECT SYSTEM$PROVISION_PRIVATELINK_ENDPOINT(
+    '<aws_endpoint_service_name>',
+    '<dns_hostname_of_your_nlb>'
+);
+
+```
+
+
+4. **Accept the connection:** Navigate to the endpoint connections tab for your Endpoint Service in the AWS console and accept the pending connection request from Snowflake.
